@@ -53,6 +53,7 @@ const ChatScreen = ({ route, navigation }) => {
         "Socket connected, emitting message-page for user ID:",
         userId
       );
+      // Emit message-page immediately to get chat history
       socketConnection.emit("message-page", userId);
       socketConnection.emit("seen", userId);
     });
@@ -73,8 +74,17 @@ const ChatScreen = ({ route, navigation }) => {
       Alert.alert("Lỗi", error.message);
     });
 
+    // Add a direct message-page emit after connection is established
+    socketConnection.emit("message-page", userId);
+
+    // Add a small delay to ensure messages are loaded
+    const timer = setTimeout(() => {
+      socketConnection.emit("message-page", userId);
+    }, 500);
+
     return () => {
       console.log("Disconnecting socket");
+      clearTimeout(timer);
       socketConnection.disconnect();
     };
   }, [userId, currentUser, navigation]);

@@ -7,6 +7,8 @@ import {
   TextInput,
   FlatList,
   Image,
+  Alert,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
@@ -20,72 +22,136 @@ const Screen05 = () => {
   const [searchText, setSearchText] = useState("");
   const [activeTab, setActiveTab] = useState("messages");
   const [socket, setSocket] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-  // Kết nối Socket.IO và lấy danh sách cuộc trò chuyện
   useEffect(() => {
     if (!currentUser?.token) {
+      Alert.alert("Lỗi", "Vui lòng đăng nhập lại");
       navigation.replace("Screen01");
       return;
     }
 
     console.log("Current user:", currentUser);
+    console.log("Token:", currentUser.token);
 
     const socketConnection = io("http://localhost:8080", {
       auth: { token: currentUser.token },
+      transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
     });
+
     setSocket(socketConnection);
 
     socketConnection.on("connect", () => {
-      console.log(
-        "Socket connected, emitting sidebar for user ID:",
-        currentUser._id
-      );
+      console.log("Socket connected successfully");
+      setLoading(true);
       socketConnection.emit("sidebar", currentUser._id);
     });
 
     socketConnection.on("connect_error", (error) => {
       console.error("Socket connection error:", error.message);
+      setLoading(false);
+      Alert.alert(
+        "Lỗi kết nối",
+        "Không thể kết nối đến server. Vui lòng thử lại sau."
+      );
     });
 
     socketConnection.on("conversation", (data) => {
       console.log("Received conversations:", data);
+      setLoading(false);
 
-      const conversationUserData = data.map((conversationUser) => {
-        if (conversationUser?.sender?._id === conversationUser?.receiver?._id) {
-          return {
-            ...conversationUser,
-            userDetails: conversationUser?.sender,
-          };
-        } else if (conversationUser?.receiver?._id !== currentUser?._id) {
-          return {
-            ...conversationUser,
-            userDetails: conversationUser.receiver,
-          };
-        } else {
-          return {
-            ...conversationUser,
-            userDetails: conversationUser.sender,
-          };
-        }
-      });
+      if (!data || !Array.isArray(data)) {
+        console.error("Invalid conversation data received");
+        return;
+      }
+
+      const conversationUserData = data
+        .map((conversationUser) => {
+          if (!conversationUser) return null;
+
+          if (
+            conversationUser?.sender?._id === conversationUser?.receiver?._id
+          ) {
+            return {
+              ...conversationUser,
+              userDetails: conversationUser?.sender,
+            };
+          } else if (conversationUser?.receiver?._id !== currentUser?._id) {
+            return {
+              ...conversationUser,
+              userDetails: conversationUser.receiver,
+            };
+          } else {
+            return {
+              ...conversationUser,
+              userDetails: conversationUser.sender,
+            };
+          }
+        })
+        .filter(Boolean);
 
       setContacts(conversationUserData);
     });
 
+    socketConnection.on("user-updated", (data) => {
+      setContacts((prevContacts) =>
+        prevContacts.map((contact) => {
+          if (contact.userDetails._id === data.userId) {
+            return {
+              ...contact,
+              userDetails: {
+                ...contact.userDetails,
+                ...data.updates,
+              },
+            };
+          }
+          return contact;
+        })
+      );
+    });
+
+    socketConnection.on("error", (error) => {
+      console.error("Server error:", error.message);
+      setLoading(false);
+      Alert.alert("Lỗi", error.message || "Không thể tải danh sách chat");
+    });
+
+    // Add a timer to re-emit sidebar event after connection
+    const timer = setTimeout(() => {
+      if (socketConnection.connected) {
+        socketConnection.emit("sidebar", currentUser._id);
+      }
+    }, 1000);
+
     return () => {
       console.log("Disconnecting socket");
-      socketConnection.disconnect();
+      clearTimeout(timer);
+      if (socketConnection) {
+        socketConnection.disconnect();
+      }
     };
   }, [currentUser, navigation]);
 
   const filteredContacts = contacts.filter((contact) =>
-    contact.userDetails.name.toLowerCase().includes(searchText.toLowerCase())
+    contact?.userDetails?.name?.toLowerCase().includes(searchText.toLowerCase())
   );
 
   const handlePersonalPress = () => {
     setActiveTab("personal");
     navigation.navigate("Screen04");
   };
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#007AFF" />
+        <Text style={styles.loadingText}>Đang tải danh sách chat...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -131,7 +197,7 @@ const Screen05 = () => {
                 }}
                 style={styles.avatar}
               />
-              <View>
+              <View style={styles.contactInfo}>
                 <Text style={styles.contactName}>{item.userDetails.name}</Text>
                 <Text style={styles.lastMessage}>
                   {item.lastMsg?.text || item.lastMsg?.imageUrl
@@ -198,6 +264,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#fff",
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#fff",
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 16,
+    color: "#666",
+  },
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
@@ -233,6 +310,9 @@ const styles = StyleSheet.create({
     padding: 15,
     borderBottomWidth: 1,
     borderBottomColor: "#f0f0f0",
+  },
+  contactInfo: {
+    flex: 1,
   },
   avatar: {
     width: 50,

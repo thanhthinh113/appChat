@@ -49,6 +49,9 @@ const ChatScreen = ({ route, navigation }) => {
   const [replyToMessage, setReplyToMessage] = useState(null);
   const [showMessageMenu, setShowMessageMenu] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+  const [isScrolling, setIsScrolling] = useState(false);
+  const [lastMessageCount, setLastMessageCount] = useState(0);
+  const [isNearBottom, setIsNearBottom] = useState(true);
 
   useEffect(() => {
     if (!currentUser?.token) {
@@ -219,6 +222,9 @@ const ChatScreen = ({ route, navigation }) => {
     // Listen for recall message success
     socketConnection.on("recall-message-success", (data) => {
       console.log("Message recalled successfully:", data);
+      console.log("Current user ID:", currentUser._id);
+      console.log("Recall user ID:", data.userId);
+
       // Cập nhật lại danh sách tin nhắn
       setMessages((prevMessages) =>
         prevMessages.map((msg) => {
@@ -237,13 +243,31 @@ const ChatScreen = ({ route, navigation }) => {
           return msg;
         })
       );
-      Alert.alert("Thành công", "Đã thu hồi tin nhắn");
+
+      // Chỉ hiển thị thông báo khi người dùng hiện tại là người thu hồi
+      if (
+        data.userId &&
+        currentUser._id &&
+        data.userId.toString() === currentUser._id.toString()
+      ) {
+        Alert.alert("Thành công", "Đã thu hồi tin nhắn");
+      }
     });
 
     // Listen for recall message error
     socketConnection.on("recall-message-error", (data) => {
       console.error("Recall message error:", data);
-      Alert.alert("Lỗi", data.error || "Không thể thu hồi tin nhắn");
+      console.log("Current user ID:", currentUser._id);
+      console.log("Recall user ID:", data.userId);
+
+      // Chỉ hiển thị thông báo lỗi khi người dùng hiện tại là người thu hồi
+      if (
+        data.userId &&
+        currentUser._id &&
+        data.userId.toString() === currentUser._id.toString()
+      ) {
+        Alert.alert("Lỗi", data.error || "Không thể thu hồi tin nhắn");
+      }
     });
 
     // Listen for new messages
@@ -301,10 +325,43 @@ const ChatScreen = ({ route, navigation }) => {
   }, [userId, currentUser, navigation]);
 
   useEffect(() => {
-    if (flatListRef.current && messages.length > 0) {
+    if (flatListRef.current && messages.length > 0 && isNearBottom) {
       flatListRef.current.scrollToEnd({ animated: true });
     }
-  }, [messages]);
+  }, [messages.length, isNearBottom]);
+
+  // Thêm useEffect để xử lý khi mới vào chat
+  useEffect(() => {
+    if (flatListRef.current && messages.length > 0) {
+      flatListRef.current.scrollToEnd({ animated: true });
+      setIsNearBottom(true);
+    }
+  }, [userId]); // Khi userId thay đổi (vào chat mới)
+
+  const handleContentSizeChange = () => {
+    if (flatListRef.current && messages.length > 0 && isNearBottom) {
+      flatListRef.current.scrollToEnd({ animated: true });
+    }
+  };
+
+  const handleLayout = () => {
+    if (flatListRef.current && messages.length > 0 && isNearBottom) {
+      flatListRef.current.scrollToEnd({ animated: true });
+    }
+  };
+
+  const handleScroll = (event) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const isCloseToBottom =
+      contentSize.height - layoutMeasurement.height - contentOffset.y < 100;
+
+    setIsNearBottom(isCloseToBottom);
+    if (isCloseToBottom) {
+      setIsScrolling(false);
+    } else {
+      setIsScrolling(true);
+    }
+  };
 
   const handleSendMessage = () => {
     if (!newMessage.text && !newMessage.imageUrl && !newMessage.videoUrl) {
@@ -346,6 +403,13 @@ const ChatScreen = ({ route, navigation }) => {
       );
     });
     setNewMessage({ text: "", imageUrl: "", videoUrl: "" });
+
+    // Thêm setTimeout để đảm bảo tin nhắn đã được thêm vào state
+    setTimeout(() => {
+      if (flatListRef.current) {
+        flatListRef.current.scrollToEnd({ animated: true });
+      }
+    }, 100);
   };
 
   const handleDeleteMessage = (messageId, isOwnMessage) => {
@@ -868,8 +932,10 @@ const ChatScreen = ({ route, navigation }) => {
         renderItem={renderMessage}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.messageList}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
-        onLayout={() => flatListRef.current?.scrollToEnd()}
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
+        onContentSizeChange={handleContentSizeChange}
+        onLayout={handleLayout}
       />
 
       {(newMessage.imageUrl || newMessage.videoUrl) && (

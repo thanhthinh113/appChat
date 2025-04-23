@@ -1,27 +1,16 @@
-const uploadFile = async ({ uri, name, type }) => {
-  const data = new FormData();
+const uploadFile = async (file) => {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("upload_preset", "chat-app-file");
 
-  data.append("file", {
-    uri,
-    type,
-    name,
+  const url = `https://api.cloudinary.com/v1_1/db8xtzpvi/image/upload`;
+
+  const response = fetch(url, {
+    method: "post",
+    body: formData,
   });
-
-  data.append("upload_preset", "chat-app-file");
-
-  const response = await fetch(
-    `https://api.cloudinary.com/v1_1/db8xtzpvi/image/upload`,
-    {
-      method: "POST",
-      body: data,
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    }
-  );
-
-  const result = await response.json();
-  return result;
+  const responseData = (await response).json();
+  return responseData;
 };
 
 export default uploadFile;

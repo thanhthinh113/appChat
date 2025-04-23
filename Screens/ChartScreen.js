@@ -26,6 +26,7 @@ import axios from "axios";
 import moment from "moment";
 import { Video } from "expo-av";
 import MessageReactions from "../Components/MessageReactions";
+import uploadFile from "../helpers/uploadFile.js";
 
 const REACTIONS = ["❤️", "😂", "😮", "😢", "👍", "👎"];
 
@@ -45,6 +46,7 @@ const ChatScreen = ({ route, navigation }) => {
   const [selectedMessageForReaction, setSelectedMessageForReaction] =
     useState(null);
   const [reactionPosition, setReactionPosition] = useState({ x: 0, y: 0 });
+  const [replyToMessage, setReplyToMessage] = useState(null);
 
   useEffect(() => {
     if (!currentUser?.token) {
@@ -280,50 +282,207 @@ const ChatScreen = ({ route, navigation }) => {
     );
   };
 
-  const handlePickMedia = async (type) => {
-    let result;
-    if (type === "image") {
-      result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 1,
-      });
-    } else {
-      result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-        quality: 1,
-      });
-    }
+  const handleUploadImage = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 1,
+      allowsEditing: true,
+      aspect: [4, 3],
+    });
 
     if (!result.canceled) {
+      const file = {
+        uri: result.assets[0].uri,
+        type: "image/jpeg",
+        name: "image.jpg",
+      };
+
       setLoading(true);
       try {
-        const formData = new FormData();
-        formData.append("file", {
-          uri: result.assets[0].uri,
-          type: type === "image" ? "image/jpeg" : "video/mp4",
-          name: type === "image" ? "image.jpg" : "video.mp4",
-        });
+        const uploadPhoto = await uploadFile(file);
+        console.log("Upload result:", uploadPhoto); // Debug log
 
-        const response = await axios.post(
-          "http://localhost:8080/api/upload",
-          formData,
-          {
-            headers: {
-              "Content-Type": "multipart/form-data",
-              Authorization: `Bearer ${currentUser.token}`,
-            },
+        if (uploadPhoto && uploadPhoto.url) {
+          // Gửi ảnh ngay lập tức
+          if (socket) {
+            const messageData = {
+              sender: currentUser._id,
+              receiver: userId,
+              text: "",
+              imageUrl: uploadPhoto.url,
+              videoUrl: "",
+              fileUrl: "",
+              fileName: "",
+              msgByUserId: currentUser._id,
+              replyTo: replyToMessage?._id,
+            };
+            console.log("Sending message:", messageData); // Debug log
+            socket.emit("new massage", messageData);
+
+            // Thêm tin nhắn vào local state
+            const tempMessage = {
+              ...messageData,
+              _id: Date.now().toString(),
+              createdAt: new Date(),
+            };
+            setMessages((prevMessages) => [...prevMessages, tempMessage]);
           }
-        );
 
-        setNewMessage((prev) => ({
-          ...prev,
-          [type === "image" ? "imageUrl" : "videoUrl"]: response.data.url,
-        }));
+          // Reset state
+          setNewMessage({
+            text: "",
+            imageUrl: "",
+            videoUrl: "",
+          });
+          setReplyToMessage(null);
+        } else {
+          throw new Error("Upload failed - no URL returned");
+        }
       } catch (error) {
         console.error("Upload error:", error);
-        Alert.alert("Lỗi", "Tải lên thất bại. Vui lòng thử lại.");
+        Alert.alert("Lỗi", "Không thể tải ảnh lên", [{ text: "OK" }]);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
+    }
+  };
+
+  const handleUploadVideo = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      quality: 1,
+      allowsEditing: true,
+      videoMaxDuration: 30,
+    });
+
+    if (!result.canceled) {
+      const file = {
+        uri: result.assets[0].uri,
+        type: "video/mp4",
+        name: "video.mp4",
+      };
+
+      setLoading(true);
+      try {
+        const uploadResult = await uploadFile(file);
+        console.log("Upload result:", uploadResult); // Debug log
+
+        if (uploadResult && uploadResult.url) {
+          // Gửi video ngay lập tức
+          if (socket) {
+            const messageData = {
+              sender: currentUser._id,
+              receiver: userId,
+              text: "",
+              imageUrl: "",
+              videoUrl: uploadResult.url,
+              fileUrl: "",
+              fileName: "",
+              msgByUserId: currentUser._id,
+              replyTo: replyToMessage?._id,
+            };
+            console.log("Sending message:", messageData); // Debug log
+            socket.emit("new massage", messageData);
+
+            // Thêm tin nhắn vào local state
+            const tempMessage = {
+              ...messageData,
+              _id: Date.now().toString(),
+              createdAt: new Date(),
+            };
+            setMessages((prevMessages) => [...prevMessages, tempMessage]);
+          }
+
+          // Reset state
+          setNewMessage({
+            text: "",
+            imageUrl: "",
+            videoUrl: "",
+          });
+          setReplyToMessage(null);
+        } else {
+          throw new Error("Upload failed - no URL returned");
+        }
+      } catch (error) {
+        console.error("Upload error:", error);
+        Alert.alert("Lỗi", "Không thể tải video lên", [{ text: "OK" }]);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleUploadFile = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      quality: 1,
+    });
+
+    if (!result.canceled) {
+      const file = {
+        uri: result.assets[0].uri,
+        type: result.assets[0].mimeType,
+        name: result.assets[0].fileName || "file",
+      };
+
+      setLoading(true);
+      try {
+        const uploadResult = await uploadFile(file);
+        console.log("Upload result:", uploadResult); // Debug log
+
+        if (uploadResult && uploadResult.url) {
+          // Gửi file ngay lập tức
+          if (socket) {
+            const messageData = {
+              sender: currentUser._id,
+              receiver: userId,
+              text: "",
+              imageUrl: "",
+              videoUrl: "",
+              fileUrl: uploadResult.url,
+              fileName: file.name,
+              msgByUserId: currentUser._id,
+              replyTo: replyToMessage?._id,
+            };
+            console.log("Sending message:", messageData); // Debug log
+            socket.emit("new massage", messageData);
+
+            // Thêm tin nhắn vào local state
+            const tempMessage = {
+              ...messageData,
+              _id: Date.now().toString(),
+              createdAt: new Date(),
+            };
+            setMessages((prevMessages) => [...prevMessages, tempMessage]);
+          }
+
+          // Reset state
+          setNewMessage({
+            text: "",
+            imageUrl: "",
+            videoUrl: "",
+          });
+          setReplyToMessage(null);
+        } else {
+          throw new Error("Upload failed - no URL returned");
+        }
+      } catch (error) {
+        console.error("Upload error:", error);
+        Alert.alert("Lỗi", "Không thể tải file lên", [{ text: "OK" }]);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  // Cập nhật lại hàm handlePickMedia để sử dụng các hàm mới
+  const handlePickMedia = (type) => {
+    if (type === "image") {
+      handleUploadImage();
+    } else if (type === "video") {
+      handleUploadVideo();
+    } else {
+      handleUploadFile();
     }
   };
 

@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+} from "react";
 import {
   View,
   Text,
@@ -9,6 +15,8 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Modal,
+  Dimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { AuthContext } from "../AuthContext.js";
@@ -17,6 +25,8 @@ import io from "socket.io-client";
 import axios from "axios";
 import moment from "moment";
 import { Video } from "expo-av";
+
+const REACTIONS = ["❤️", "😂", "😮", "😢", "👍", "👎"];
 
 const ChatScreen = ({ route, navigation }) => {
   const { currentUser } = React.useContext(AuthContext);
@@ -30,6 +40,10 @@ const ChatScreen = ({ route, navigation }) => {
   const [loading, setLoading] = useState(false);
   const [socket, setSocket] = useState(null);
   const flatListRef = useRef(null);
+  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const [selectedMessageForReaction, setSelectedMessageForReaction] =
+    useState(null);
+  const [reactionPosition, setReactionPosition] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
     if (!currentUser?.token) {
@@ -42,9 +56,12 @@ const ChatScreen = ({ route, navigation }) => {
     console.log("Token:", currentUser.token);
     console.log("Chat with user ID:", userId);
 
-    // Replace localhost with your server IP if testing on a real device
     const socketConnection = io("http://localhost:8080", {
       auth: { token: currentUser.token },
+      transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
     });
     setSocket(socketConnection);
 
@@ -53,7 +70,6 @@ const ChatScreen = ({ route, navigation }) => {
         "Socket connected, emitting message-page for user ID:",
         userId
       );
-      // Emit message-page immediately to get chat history
       socketConnection.emit("message-page", userId);
       socketConnection.emit("seen", userId);
     });
@@ -65,17 +81,113 @@ const ChatScreen = ({ route, navigation }) => {
 
     socketConnection.on("message", (data) => {
       console.log("Received messages:", data);
-      setMessages(data);
+      if (Array.isArray(data)) {
+        setMessages(data);
+      } else if (data._id) {
+        setMessages((prevMessages) => [...prevMessages, data]);
+      }
     });
 
-    // Handle errors from the server
+    socketConnection.on("message-page", (data) => {
+      console.log("Received message history:", data);
+      if (Array.isArray(data)) {
+        setMessages(data);
+      }
+    });
+
+    socketConnection.on("reaction-updated", (data) => {
+      console.log("Received reaction-updated event from server:", data);
+      if (data && data.messageId) {
+        setMessages((prevMessages) =>
+          prevMessages.map((msg) => {
+            if (msg._id === data.messageId) {
+              return {
+                ...msg,
+                reactions: data.reactions || [],
+              };
+            }
+            return msg;
+          })
+        );
+      }
+    });
+
+    socketConnection.on("reaction-error", (error) => {
+      console.error("Reaction error from server:", error);
+      Alert.alert("Lỗi", "Không thể cập nhật reaction. Vui lòng thử lại.");
+    });
+
+    socketConnection.on("new-reaction", (reactionData) => {
+      console.log("Received new-reaction event from web:", reactionData);
+      if (reactionData && reactionData.messageId) {
+        setMessages((prevMessages) =>
+          prevMessages.map((msg) => {
+            if (msg._id === reactionData.messageId) {
+              const existingReaction = msg.reactions?.find(
+                (r) => r.userId.toString() === reactionData.userId.toString()
+              );
+
+              if (existingReaction) {
+                if (existingReaction.emoji === reactionData.emoji) {
+                  return {
+                    ...msg,
+                    reactions: msg.reactions.filter(
+                      (r) =>
+                        r.userId.toString() !== reactionData.userId.toString()
+                    ),
+                  };
+                } else {
+                  return {
+                    ...msg,
+                    reactions: msg.reactions.map((r) =>
+                      r.userId.toString() === reactionData.userId.toString()
+                        ? {
+                            ...r,
+                            emoji: reactionData.emoji,
+                            createdAt: reactionData.createdAt,
+                          }
+                        : r
+                    ),
+                  };
+                }
+              } else {
+                return {
+                  ...msg,
+                  reactions: [
+                    ...(msg.reactions || []),
+                    {
+                      userId: reactionData.userId.toString(),
+                      emoji: reactionData.emoji,
+                      createdAt: reactionData.createdAt,
+                      type: "reaction",
+                    },
+                  ],
+                };
+              }
+            }
+            return msg;
+          })
+        );
+      }
+    });
+
+    socketConnection.on("new-message", (newMessage) => {
+      console.log("Received new message:", newMessage);
+      console.log("Current user ID:", currentUser._id);
+      console.log("Message sender ID:", newMessage.msgByUserId);
+      setMessages((prevMessages) => {
+        const updatedMessages = [...prevMessages, newMessage];
+        // Sort messages by createdAt
+        return updatedMessages.sort(
+          (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+        );
+      });
+    });
+
     socketConnection.on("error", (error) => {
       console.error("Server error:", error.message);
       Alert.alert("Lỗi", error.message);
     });
-
-    // Add a direct message-page emit after connection is established
-    socketConnection.emit("message-page", userId);
 
     // Add a small delay to ensure messages are loaded
     const timer = setTimeout(() => {
@@ -119,7 +231,21 @@ const ChatScreen = ({ route, navigation }) => {
     };
 
     console.log("Sending message:", messageData);
-    socket.emit("new massage", messageData); // Fixed to match backend
+    socket.emit("new massage", messageData);
+
+    // Add the message to local state immediately
+    const tempMessage = {
+      ...messageData,
+      _id: Date.now().toString(),
+      createdAt: new Date(),
+    };
+    console.log("Adding temporary message:", tempMessage);
+    setMessages((prevMessages) => {
+      const updatedMessages = [...prevMessages, tempMessage];
+      return updatedMessages.sort(
+        (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+      );
+    });
     setNewMessage({ text: "", imageUrl: "", videoUrl: "" });
   };
 
@@ -207,42 +333,227 @@ const ChatScreen = ({ route, navigation }) => {
     }));
   };
 
-  const renderMessage = ({ item }) => (
-    <View
-      style={[
-        styles.messageContainer,
-        item.msgByUserId === currentUser._id
-          ? styles.sentMessage
-          : styles.receivedMessage,
-      ]}
-    >
-      <View style={styles.messageContent}>
-        {item.imageUrl && (
-          <Image source={{ uri: item.imageUrl }} style={styles.messageImage} />
-        )}
-        {item.videoUrl && (
-          <Video
-            source={{ uri: item.videoUrl }}
-            style={styles.messageVideo}
-            useNativeControls
-            resizeMode="contain"
-          />
-        )}
-        {item.text && <Text style={styles.messageText}>{item.text}</Text>}
-        <Text style={styles.messageTime}>
-          {moment(item.createdAt).format("HH:mm")}
-        </Text>
+  const renderReactions = (reactions) => {
+    if (!reactions || reactions.length === 0) return null;
+
+    const reactionCounts = reactions.reduce((acc, reaction) => {
+      acc[reaction.emoji] = (acc[reaction.emoji] || 0) + 1;
+      return acc;
+    }, {});
+
+    return (
+      <View style={styles.reactionsContainer}>
+        {Object.entries(reactionCounts).map(([emoji, count]) => (
+          <View key={emoji} style={styles.reactionBubble}>
+            <Text style={styles.reactionEmoji}>{emoji}</Text>
+            <Text style={styles.reactionCount}>{count}</Text>
+          </View>
+        ))}
       </View>
-      {item.msgByUserId === currentUser._id && (
-        <TouchableOpacity
-          style={styles.deleteButton}
-          onPress={() => handleDeleteMessage(item._id)}
+    );
+  };
+
+  const handleReaction = (messageId, emoji) => {
+    if (!socket) {
+      console.log("Socket not connected");
+      return;
+    }
+
+    try {
+      const reactionData = {
+        messageId: messageId.toString(),
+        emoji: emoji,
+        userId: currentUser._id.toString(),
+        createdAt: new Date().toISOString(),
+      };
+
+      console.log("Sending reaction data to server:", reactionData);
+      socket.emit("reaction", reactionData);
+
+      // Cập nhật UI ngay lập tức
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) => {
+          if (msg._id === messageId) {
+            const existingReaction = msg.reactions?.find(
+              (r) => r.userId.toString() === currentUser._id.toString()
+            );
+
+            if (existingReaction) {
+              if (existingReaction.emoji === emoji) {
+                return {
+                  ...msg,
+                  reactions: msg.reactions.filter(
+                    (r) => r.userId.toString() !== currentUser._id.toString()
+                  ),
+                };
+              } else {
+                return {
+                  ...msg,
+                  reactions: msg.reactions.map((r) =>
+                    r.userId.toString() === currentUser._id.toString()
+                      ? { ...r, emoji, createdAt: new Date().toISOString() }
+                      : r
+                  ),
+                };
+              }
+            } else {
+              return {
+                ...msg,
+                reactions: [
+                  ...(msg.reactions || []),
+                  {
+                    userId: currentUser._id.toString(),
+                    emoji,
+                    createdAt: new Date().toISOString(),
+                  },
+                ],
+              };
+            }
+          }
+          return msg;
+        })
+      );
+
+      setShowReactionPicker(false);
+    } catch (error) {
+      console.error("Error handling reaction:", error);
+      Alert.alert("Lỗi", "Không thể thêm reaction. Vui lòng thử lại.");
+    }
+  };
+
+  // Thêm socket event listener cho reaction
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on("reaction-updated", (data) => {
+      console.log("Received reaction-updated event from server:", data);
+      if (data && data.messageId) {
+        setMessages((prevMessages) =>
+          prevMessages.map((msg) => {
+            if (msg._id === data.messageId) {
+              return {
+                ...msg,
+                reactions: data.reactions || [],
+              };
+            }
+            return msg;
+          })
+        );
+      }
+    });
+
+    socket.on("reaction-error", (error) => {
+      console.error("Reaction error from server:", error);
+      Alert.alert("Lỗi", "Không thể cập nhật reaction. Vui lòng thử lại.");
+    });
+
+    return () => {
+      socket.off("reaction-updated");
+      socket.off("reaction-error");
+    };
+  }, [socket]);
+
+  const renderMessage = ({ item }) => {
+    const isSent =
+      typeof item.msgByUserId === "object"
+        ? item.msgByUserId._id === currentUser._id
+        : item.msgByUserId === currentUser._id;
+
+    console.log("Rendering message:", {
+      messageId: item._id,
+      msgByUserId:
+        typeof item.msgByUserId === "object"
+          ? item.msgByUserId._id
+          : item.msgByUserId,
+      currentUserId: currentUser._id,
+      isSent: isSent,
+    });
+
+    return (
+      <View
+        style={[
+          styles.messageWrapper,
+          isSent ? styles.sentMessageWrapper : styles.receivedMessageWrapper,
+        ]}
+      >
+        <View
+          style={[
+            styles.messageContainer,
+            isSent ? styles.sentMessage : styles.receivedMessage,
+          ]}
         >
-          <Ionicons name="trash" size={20} color="#fff" />
+          {item.imageUrl && (
+            <Image
+              source={{ uri: item.imageUrl }}
+              style={styles.messageImage}
+            />
+          )}
+          {item.videoUrl && (
+            <Video
+              source={{ uri: item.videoUrl }}
+              style={styles.messageVideo}
+              useNativeControls
+              resizeMode="contain"
+            />
+          )}
+          {item.text && (
+            <Text
+              style={[
+                styles.messageText,
+                isSent ? styles.sentMessageText : styles.receivedMessageText,
+              ]}
+            >
+              {item.text}
+            </Text>
+          )}
+          <View style={styles.messageFooter}>
+            <Text
+              style={[
+                styles.messageTime,
+                isSent ? styles.sentMessageTime : styles.receivedMessageTime,
+              ]}
+            >
+              {moment(item.createdAt).format("HH:mm")}
+            </Text>
+            {isSent && (
+              <TouchableOpacity
+                style={styles.menuButton}
+                onPress={() => {
+                  setSelectedMessageForReaction(item);
+                  setReactionPosition({
+                    x: event.nativeEvent.pageX,
+                    y: event.nativeEvent.pageY,
+                  });
+                  setShowReactionPicker(true);
+                }}
+              >
+                <Ionicons name="ellipsis-vertical" size={20} color="#666" />
+              </TouchableOpacity>
+            )}
+            {renderReactions(item.reactions)}
+          </View>
+        </View>
+        <TouchableOpacity
+          style={[
+            styles.reactionButton,
+            isSent
+              ? styles.sentMessageReactionButton
+              : styles.receivedMessageReactionButton,
+          ]}
+          onPress={(event) => {
+            setSelectedMessageForReaction(item);
+            setReactionPosition({
+              x: event.nativeEvent.pageX,
+              y: event.nativeEvent.pageY,
+            });
+            setShowReactionPicker(true);
+          }}
+        >
+          <Ionicons name="happy-outline" size={18} color="#666" />
         </TouchableOpacity>
-      )}
-    </View>
-  );
+      </View>
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -265,6 +576,8 @@ const ChatScreen = ({ route, navigation }) => {
         renderItem={renderMessage}
         keyExtractor={(item) => item._id}
         contentContainerStyle={styles.messageList}
+        onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+        onLayout={() => flatListRef.current?.scrollToEnd()}
       />
 
       {(newMessage.imageUrl || newMessage.videoUrl) && (
@@ -317,42 +630,152 @@ const ChatScreen = ({ route, navigation }) => {
           <ActivityIndicator size="large" color="#007AFF" />
         </View>
       )}
+
+      <Modal
+        visible={showReactionPicker}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowReactionPicker(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowReactionPicker(false)}
+        >
+          <View
+            style={[
+              styles.reactionPicker,
+              {
+                top: reactionPosition.y - 45,
+                left: Math.max(
+                  10,
+                  Math.min(
+                    reactionPosition.x - 80,
+                    Dimensions.get("window").width - 180
+                  )
+                ),
+              },
+            ]}
+          >
+            {REACTIONS.map((emoji) => (
+              <TouchableOpacity
+                key={emoji}
+                style={styles.reactionOption}
+                onPress={() =>
+                  handleReaction(selectedMessageForReaction._id, emoji)
+                }
+              >
+                <Text style={styles.reactionEmoji}>{emoji}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f5f5f5", marginTop: 40 },
+  container: {
+    flex: 1,
+    backgroundColor: "#f5f5f5",
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#007AFF",
-    padding: 10,
+    backgroundColor: "#0084ff",
+    padding: 15,
+    paddingTop: 50,
   },
-  headerUser: { flexDirection: "row", alignItems: "center", marginLeft: 10 },
-  headerAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 10 },
-  headerName: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  messageList: { padding: 10 },
-  messageContainer: {
+  headerUser: {
     flexDirection: "row",
     alignItems: "center",
-    maxWidth: "80%",
-    marginVertical: 5,
-    padding: 10,
-    borderRadius: 10,
-  },
-  sentMessage: { backgroundColor: "#007AFF", alignSelf: "flex-end" },
-  receivedMessage: { backgroundColor: "#e1e1e1", alignSelf: "flex-start" },
-  messageContent: { flex: 1 },
-  messageText: { color: "#000", fontSize: 16 },
-  messageImage: { width: 200, height: 200, borderRadius: 10, marginBottom: 5 },
-  messageVideo: { width: 200, height: 200, borderRadius: 10, marginBottom: 5 },
-  messageTime: { fontSize: 12, color: "#666", alignSelf: "flex-end" },
-  deleteButton: {
     marginLeft: 10,
-    padding: 5,
-    backgroundColor: "#ff4d4d",
+  },
+  headerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    marginRight: 10,
+  },
+  headerName: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  messageList: {
+    padding: 10,
+    paddingBottom: 20,
+  },
+  messageWrapper: {
+    marginVertical: 5,
+    maxWidth: "80%",
+    flexDirection: "row",
+    alignItems: "flex-end",
+  },
+  sentMessageWrapper: {
+    alignSelf: "flex-end",
+    flexDirection: "row-reverse",
+  },
+  receivedMessageWrapper: {
+    alignSelf: "flex-start",
+  },
+  messageContainer: {
+    padding: 10,
     borderRadius: 15,
+    maxWidth: "100%",
+  },
+  sentMessage: {
+    backgroundColor: "#0084ff",
+    borderTopRightRadius: 0,
+  },
+  receivedMessage: {
+    backgroundColor: "#e9ecef",
+    borderTopLeftRadius: 0,
+  },
+  messageText: {
+    fontSize: 16,
+    lineHeight: 20,
+  },
+  sentMessageText: {
+    color: "#fff",
+  },
+  receivedMessageText: {
+    color: "#000",
+  },
+  messageImage: {
+    width: 200,
+    height: 200,
+    borderRadius: 10,
+    marginBottom: 5,
+  },
+  messageVideo: {
+    width: 200,
+    height: 200,
+    borderRadius: 10,
+    marginBottom: 5,
+  },
+  messageFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginTop: 4,
+    borderTopWidth: 0.5,
+    borderTopColor: "rgba(0,0,0,0.1)",
+    paddingTop: 4,
+  },
+  messageTime: {
+    fontSize: 12,
+    marginRight: 5,
+  },
+  sentMessageTime: {
+    color: "rgba(255, 255, 255, 0.7)",
+  },
+  receivedMessageTime: {
+    color: "rgba(0, 0, 0, 0.5)",
+  },
+  menuButton: {
+    padding: 5,
   },
   inputContainer: {
     flexDirection: "row",
@@ -362,7 +785,14 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: "#eee",
   },
-  input: { flex: 1, padding: 10, fontSize: 16, marginHorizontal: 10 },
+  input: {
+    flex: 1,
+    padding: 10,
+    fontSize: 16,
+    marginHorizontal: 10,
+    backgroundColor: "#f0f0f0",
+    borderRadius: 20,
+  },
   mediaPreview: {
     position: "absolute",
     bottom: 80,
@@ -384,6 +814,74 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "rgba(0,0,0,0.3)",
+  },
+  reactionButton: {
+    padding: 6,
+    marginHorizontal: 4,
+    borderRadius: 15,
+    backgroundColor: "rgba(255,255,255,0.9)",
+    alignSelf: "flex-end",
+  },
+  reactionsContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginTop: 4,
+    marginBottom: 4,
+    maxWidth: "100%",
+  },
+  reactionBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.9)",
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    marginRight: 4,
+    marginBottom: 2,
+  },
+  reactionEmoji: {
+    fontSize: 14,
+  },
+  reactionCount: {
+    fontSize: 12,
+    marginLeft: 2,
+    color: "#666",
+  },
+  sentMessageReactionButton: {
+    marginRight: 4,
+  },
+  receivedMessageReactionButton: {
+    marginLeft: 4,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  reactionPicker: {
+    position: "absolute",
+    flexDirection: "row",
+    backgroundColor: "white",
+    borderRadius: 20,
+    padding: 5,
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    zIndex: 1000,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  reactionOption: {
+    padding: 5,
+    marginHorizontal: 2,
+    borderRadius: 15,
+    backgroundColor: "#f0f2f5",
   },
 });
 

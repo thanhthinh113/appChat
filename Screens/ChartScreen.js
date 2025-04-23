@@ -25,6 +25,7 @@ import io from "socket.io-client";
 import axios from "axios";
 import moment from "moment";
 import { Video } from "expo-av";
+import MessageReactions from "../Components/MessageReactions";
 
 const REACTIONS = ["❤️", "😂", "😮", "😢", "👍", "👎"];
 
@@ -333,92 +334,17 @@ const ChatScreen = ({ route, navigation }) => {
     }));
   };
 
-  const renderReactions = (reactions) => {
-    if (!reactions || reactions.length === 0) return null;
-
-    const reactionCounts = reactions.reduce((acc, reaction) => {
-      acc[reaction.emoji] = (acc[reaction.emoji] || 0) + 1;
-      return acc;
-    }, {});
-
-    return (
-      <View style={styles.reactionsContainer}>
-        {Object.entries(reactionCounts).map(([emoji, count]) => (
-          <View key={emoji} style={styles.reactionBubble}>
-            <Text style={styles.reactionEmoji}>{emoji}</Text>
-            <Text style={styles.reactionCount}>{count}</Text>
-          </View>
-        ))}
-      </View>
-    );
-  };
-
   const handleReaction = (messageId, emoji) => {
-    if (!socket) {
-      console.log("Socket not connected");
-      return;
-    }
+    if (!socket || !currentUser?._id) return;
 
-    try {
-      const reactionData = {
-        messageId: messageId.toString(),
-        emoji: emoji,
-        userId: currentUser._id.toString(),
-        createdAt: new Date().toISOString(),
-      };
+    socket.emit("react_to_message", {
+      messageId,
+      emoji,
+      userId: currentUser._id,
+    });
 
-      console.log("Sending reaction data to server:", reactionData);
-      socket.emit("reaction", reactionData);
-
-      // Cập nhật UI ngay lập tức
-      setMessages((prevMessages) =>
-        prevMessages.map((msg) => {
-          if (msg._id === messageId) {
-            const existingReaction = msg.reactions?.find(
-              (r) => r.userId.toString() === currentUser._id.toString()
-            );
-
-            if (existingReaction) {
-              if (existingReaction.emoji === emoji) {
-                return {
-                  ...msg,
-                  reactions: msg.reactions.filter(
-                    (r) => r.userId.toString() !== currentUser._id.toString()
-                  ),
-                };
-              } else {
-                return {
-                  ...msg,
-                  reactions: msg.reactions.map((r) =>
-                    r.userId.toString() === currentUser._id.toString()
-                      ? { ...r, emoji, createdAt: new Date().toISOString() }
-                      : r
-                  ),
-                };
-              }
-            } else {
-              return {
-                ...msg,
-                reactions: [
-                  ...(msg.reactions || []),
-                  {
-                    userId: currentUser._id.toString(),
-                    emoji,
-                    createdAt: new Date().toISOString(),
-                  },
-                ],
-              };
-            }
-          }
-          return msg;
-        })
-      );
-
-      setShowReactionPicker(false);
-    } catch (error) {
-      console.error("Error handling reaction:", error);
-      Alert.alert("Lỗi", "Không thể thêm reaction. Vui lòng thử lại.");
-    }
+    // Tự động tắt reaction picker sau khi chọn
+    setShowReactionPicker(false);
   };
 
   // Thêm socket event listener cho reaction
@@ -442,14 +368,8 @@ const ChatScreen = ({ route, navigation }) => {
       }
     });
 
-    socket.on("reaction-error", (error) => {
-      console.error("Reaction error from server:", error);
-      Alert.alert("Lỗi", "Không thể cập nhật reaction. Vui lòng thử lại.");
-    });
-
     return () => {
       socket.off("reaction-updated");
-      socket.off("reaction-error");
     };
   }, [socket]);
 
@@ -530,7 +450,10 @@ const ChatScreen = ({ route, navigation }) => {
                 <Ionicons name="ellipsis-vertical" size={20} color="#666" />
               </TouchableOpacity>
             )}
-            {renderReactions(item.reactions)}
+            <MessageReactions
+              reactions={item.reactions}
+              onReactionPress={(emoji) => handleReaction(item._id, emoji)}
+            />
           </View>
         </View>
         <TouchableOpacity
@@ -661,9 +584,10 @@ const ChatScreen = ({ route, navigation }) => {
               <TouchableOpacity
                 key={emoji}
                 style={styles.reactionOption}
-                onPress={() =>
-                  handleReaction(selectedMessageForReaction._id, emoji)
-                }
+                onPress={() => {
+                  handleReaction(selectedMessageForReaction._id, emoji);
+                  setShowReactionPicker(false);
+                }}
               >
                 <Text style={styles.reactionEmoji}>{emoji}</Text>
               </TouchableOpacity>
@@ -864,7 +788,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     backgroundColor: "white",
     borderRadius: 20,
-    padding: 5,
+    padding: 8,
     shadowColor: "#000",
     shadowOffset: {
       width: 0,
@@ -874,14 +798,18 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
     elevation: 5,
     zIndex: 1000,
-    justifyContent: "center",
-    alignItems: "center",
+    maxWidth: "90%",
+    left: "5%",
+    transform: [{ translateX: -50 }],
   },
   reactionOption: {
-    padding: 5,
+    padding: 8,
     marginHorizontal: 2,
     borderRadius: 15,
     backgroundColor: "#f0f2f5",
+  },
+  reactionEmoji: {
+    fontSize: 18,
   },
 });
 

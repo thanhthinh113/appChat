@@ -47,6 +47,8 @@ const ChatScreen = ({ route, navigation }) => {
     useState(null);
   const [reactionPosition, setReactionPosition] = useState({ x: 0, y: 0 });
   const [replyToMessage, setReplyToMessage] = useState(null);
+  const [showMessageMenu, setShowMessageMenu] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
 
   useEffect(() => {
     if (!currentUser?.token) {
@@ -192,6 +194,100 @@ const ChatScreen = ({ route, navigation }) => {
       Alert.alert("Lỗi", error.message);
     });
 
+    // Get conversation ID
+    socketConnection.on("conversation-id", (data) => {
+      console.log("Received conversation ID:", data);
+      setConversationId(data.conversationId);
+    });
+
+    // Listen for delete message success
+    socketConnection.on("delete-message-success", (data) => {
+      console.log("Message deleted successfully:", data.messageId);
+      // Cập nhật lại danh sách tin nhắn
+      setMessages((prevMessages) =>
+        prevMessages.filter((msg) => msg._id !== data.messageId)
+      );
+      Alert.alert("Thành công", "Đã xóa tin nhắn thành công");
+    });
+
+    // Listen for delete message error
+    socketConnection.on("delete-message-error", (data) => {
+      console.error("Delete message error:", data);
+      Alert.alert("Lỗi", data.error || "Không thể xóa tin nhắn");
+    });
+
+    // Listen for recall message success
+    socketConnection.on("recall-message-success", (data) => {
+      console.log("Message recalled successfully:", data);
+      // Cập nhật lại danh sách tin nhắn
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) => {
+          if (msg._id === data.messageId) {
+            return {
+              ...msg,
+              isRecalled: true,
+              text: "",
+              imageUrl: "",
+              videoUrl: "",
+              fileUrl: "",
+              fileName: "",
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return msg;
+        })
+      );
+      Alert.alert("Thành công", "Đã thu hồi tin nhắn");
+    });
+
+    // Listen for recall message error
+    socketConnection.on("recall-message-error", (data) => {
+      console.error("Recall message error:", data);
+      Alert.alert("Lỗi", data.error || "Không thể thu hồi tin nhắn");
+    });
+
+    // Listen for new messages
+    socketConnection.on("new-message", (newMessage) => {
+      console.log("Received new message:", newMessage);
+      // Kiểm tra xem tin nhắn đã được thu hồi chưa
+      if (newMessage.isRecalled) {
+        newMessage.text = "";
+        newMessage.imageUrl = "";
+        newMessage.videoUrl = "";
+        newMessage.fileUrl = "";
+        newMessage.fileName = "";
+      }
+      setMessages((prevMessages) => {
+        const updatedMessages = [...prevMessages, newMessage];
+        return updatedMessages.sort(
+          (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+        );
+      });
+    });
+
+    // Listen for message updates
+    socketConnection.on("message-updated", (updatedMessage) => {
+      console.log("Message updated:", updatedMessage);
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) => {
+          if (msg._id === updatedMessage._id) {
+            return {
+              ...msg,
+              ...updatedMessage,
+              // Giữ nguyên trạng thái thu hồi nếu đã được thu hồi
+              isRecalled: msg.isRecalled || updatedMessage.isRecalled,
+              text: msg.isRecalled ? "" : updatedMessage.text,
+              imageUrl: msg.isRecalled ? "" : updatedMessage.imageUrl,
+              videoUrl: msg.isRecalled ? "" : updatedMessage.videoUrl,
+              fileUrl: msg.isRecalled ? "" : updatedMessage.fileUrl,
+              fileName: msg.isRecalled ? "" : updatedMessage.fileName,
+            };
+          }
+          return msg;
+        })
+      );
+    });
+
     // Add a small delay to ensure messages are loaded
     const timer = setTimeout(() => {
       socketConnection.emit("message-page", userId);
@@ -252,11 +348,12 @@ const ChatScreen = ({ route, navigation }) => {
     setNewMessage({ text: "", imageUrl: "", videoUrl: "" });
   };
 
-  // Handle message deletion
-  const handleDeleteMessage = (messageId) => {
+  const handleDeleteMessage = (messageId, isOwnMessage) => {
     Alert.alert(
       "Xóa tin nhắn",
-      "Bạn có chắc muốn thu hồi tin nhắn này?",
+      isOwnMessage
+        ? "Bạn có chắc chắn muốn xóa tin nhắn này không?"
+        : "Bạn có chắc chắn muốn xóa tin nhắn này chỉ ở phía bạn không?",
       [
         { text: "Hủy", style: "cancel" },
         {
@@ -264,15 +361,56 @@ const ChatScreen = ({ route, navigation }) => {
           style: "destructive",
           onPress: () => {
             if (socket) {
+              console.log("Emitting delete-message with:", {
+                messageId,
+                userId: currentUser._id,
+                conversationId: conversationId,
+                deleteForEveryone: isOwnMessage,
+              });
               socket.emit("delete-message", {
                 messageId,
-                senderId: currentUser._id.toString(),
-                receiverId: userId.toString(),
+                userId: currentUser._id,
+                conversationId: conversationId,
+                deleteForEveryone: isOwnMessage,
               });
             } else {
               Alert.alert(
                 "Lỗi",
                 "Không thể xóa tin nhắn. Kết nối server bị gián đoạn."
+              );
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  const handleRecallMessage = (messageId) => {
+    Alert.alert(
+      "Thu hồi tin nhắn",
+      "Bạn có chắc chắn muốn thu hồi tin nhắn này không?",
+      [
+        { text: "Hủy", style: "cancel" },
+        {
+          text: "Thu hồi",
+          style: "destructive",
+          onPress: () => {
+            if (socket) {
+              console.log("Emitting recall-message with:", {
+                messageId,
+                userId: currentUser._id,
+                conversationId: conversationId,
+              });
+              socket.emit("recall-message", {
+                messageId,
+                userId: currentUser._id,
+                conversationId: conversationId,
+              });
+            } else {
+              Alert.alert(
+                "Lỗi",
+                "Không thể thu hồi tin nhắn. Kết nối server bị gián đoạn."
               );
             }
           },
@@ -532,11 +670,44 @@ const ChatScreen = ({ route, navigation }) => {
     };
   }, [socket]);
 
+  // Thêm socket listener cho recall message
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on("recall-message-success", (data) => {
+      console.log("Message recalled successfully:", data);
+      // Cập nhật lại danh sách tin nhắn
+      setMessages((prevMessages) =>
+        prevMessages.map((msg) => {
+          if (msg._id === data.messageId) {
+            return {
+              ...msg,
+              isRecalled: true,
+            };
+          }
+          return msg;
+        })
+      );
+      Alert.alert("Thành công", "Đã thu hồi tin nhắn");
+    });
+
+    socket.on("recall-message-error", (data) => {
+      console.error("Recall message error:", data);
+      Alert.alert("Lỗi", data.error || "Không thể thu hồi tin nhắn");
+    });
+
+    return () => {
+      socket.off("recall-message-success");
+      socket.off("recall-message-error");
+    };
+  }, [socket]);
+
   const renderMessage = ({ item }) => {
     const isSent =
       typeof item.msgByUserId === "object"
         ? item.msgByUserId._id === currentUser._id
         : item.msgByUserId === currentUser._id;
+    const isRecalled = item.isRecalled;
 
     console.log("Rendering message:", {
       messageId: item._id,
@@ -561,29 +732,41 @@ const ChatScreen = ({ route, navigation }) => {
             isSent ? styles.sentMessage : styles.receivedMessage,
           ]}
         >
-          {item.imageUrl && (
-            <Image
-              source={{ uri: item.imageUrl }}
-              style={styles.messageImage}
-            />
-          )}
-          {item.videoUrl && (
-            <Video
-              source={{ uri: item.videoUrl }}
-              style={styles.messageVideo}
-              useNativeControls
-              resizeMode="contain"
-            />
-          )}
-          {item.text && (
-            <Text
-              style={[
-                styles.messageText,
-                isSent ? styles.sentMessageText : styles.receivedMessageText,
-              ]}
-            >
-              {item.text}
+          {isRecalled ? (
+            <Text style={styles.recalledMessage}>
+              {isSent
+                ? "Bạn đã thu hồi một tin nhắn"
+                : "Tin nhắn đã được thu hồi"}
             </Text>
+          ) : (
+            <>
+              {item.imageUrl && (
+                <Image
+                  source={{ uri: item.imageUrl }}
+                  style={styles.messageImage}
+                />
+              )}
+              {item.videoUrl && (
+                <Video
+                  source={{ uri: item.videoUrl }}
+                  style={styles.messageVideo}
+                  useNativeControls
+                  resizeMode="contain"
+                />
+              )}
+              {item.text && (
+                <Text
+                  style={[
+                    styles.messageText,
+                    isSent
+                      ? styles.sentMessageText
+                      : styles.receivedMessageText,
+                  ]}
+                >
+                  {item.text}
+                </Text>
+              )}
+            </>
           )}
           <View style={styles.messageFooter}>
             <Text
@@ -594,16 +777,12 @@ const ChatScreen = ({ route, navigation }) => {
             >
               {moment(item.createdAt).format("HH:mm")}
             </Text>
-            {isSent && (
+            {!isRecalled && (
               <TouchableOpacity
                 style={styles.menuButton}
                 onPress={() => {
                   setSelectedMessageForReaction(item);
-                  setReactionPosition({
-                    x: event.nativeEvent.pageX,
-                    y: event.nativeEvent.pageY,
-                  });
-                  setShowReactionPicker(true);
+                  setShowMessageMenu(!showMessageMenu);
                 }}
               >
                 <Ionicons name="ellipsis-vertical" size={20} color="#666" />
@@ -633,6 +812,37 @@ const ChatScreen = ({ route, navigation }) => {
         >
           <Ionicons name="happy-outline" size={18} color="#666" />
         </TouchableOpacity>
+
+        {showMessageMenu && selectedMessageForReaction?._id === item._id && (
+          <View style={styles.messageMenu}>
+            {isSent && !isRecalled && (
+              <TouchableOpacity
+                style={styles.menuItem}
+                onPress={() => {
+                  handleRecallMessage(item._id);
+                  setShowMessageMenu(false);
+                }}
+              >
+                <Ionicons name="trash-outline" size={20} color="#ff3b30" />
+                <Text style={[styles.menuItemText, { color: "#ff3b30" }]}>
+                  Thu hồi
+                </Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                handleDeleteMessage(item._id, isSent);
+                setShowMessageMenu(false);
+              }}
+            >
+              <Ionicons name="trash-outline" size={20} color="#ff3b30" />
+              <Text style={[styles.menuItemText, { color: "#ff3b30" }]}>
+                Xóa tin nhắn
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   };
@@ -969,6 +1179,37 @@ const styles = StyleSheet.create({
   },
   reactionEmoji: {
     fontSize: 18,
+  },
+  recalledMessage: {
+    fontStyle: "italic",
+    color: "#666",
+    fontSize: 14,
+  },
+  messageMenu: {
+    position: "absolute",
+    right: 0,
+    top: 0,
+    backgroundColor: "white",
+    borderRadius: 8,
+    padding: 8,
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    zIndex: 1000,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 8,
+  },
+  menuItemText: {
+    marginLeft: 8,
+    fontSize: 14,
   },
 });
 

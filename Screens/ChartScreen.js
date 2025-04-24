@@ -857,7 +857,6 @@ const ChatScreen = ({ route, navigation }) => {
           return msg;
         })
       );
-      Alert.alert("Thành công", "Đã thu hồi tin nhắn");
     });
 
     socket.on("recall-message-error", (data) => {

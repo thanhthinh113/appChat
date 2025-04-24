@@ -1170,62 +1170,110 @@ const ChatScreen = ({ route, navigation }) => {
         </View>
       </View>
 
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        renderItem={renderMessage}
-        keyExtractor={(item) => item._id}
-        contentContainerStyle={styles.messageList}
-        onScroll={handleScroll}
-        scrollEventThrottle={16}
-        onContentSizeChange={handleContentSizeChange}
-        onLayout={handleLayout}
-      />
+      {friendRequestStatus.isFriend ? (
+        <>
+          <FlatList
+            ref={flatListRef}
+            data={messages}
+            renderItem={renderMessage}
+            keyExtractor={(item) => item._id}
+            contentContainerStyle={styles.messageList}
+            onScroll={handleScroll}
+            scrollEventThrottle={16}
+            onContentSizeChange={handleContentSizeChange}
+            onLayout={handleLayout}
+          />
 
-      {(newMessage.imageUrl || newMessage.videoUrl) && (
-        <View style={styles.mediaPreview}>
-          <TouchableOpacity
-            style={styles.closeMedia}
-            onPress={() =>
-              handleClearMedia(newMessage.imageUrl ? "image" : "video")
-            }
-          >
-            <Ionicons name="close" size={24} color="#fff" />
-          </TouchableOpacity>
-          {newMessage.imageUrl && (
-            <Image
-              source={{ uri: newMessage.imageUrl }}
-              style={styles.previewImage}
-            />
+          {(newMessage.imageUrl || newMessage.videoUrl) && (
+            <View style={styles.mediaPreview}>
+              <TouchableOpacity
+                style={styles.closeMedia}
+                onPress={() =>
+                  handleClearMedia(newMessage.imageUrl ? "image" : "video")
+                }
+              >
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+              {newMessage.imageUrl && (
+                <Image
+                  source={{ uri: newMessage.imageUrl }}
+                  style={styles.previewImage}
+                />
+              )}
+              {newMessage.videoUrl && (
+                <Video
+                  source={{ uri: newMessage.videoUrl }}
+                  style={styles.previewVideo}
+                  useNativeControls
+                  resizeMode="contain"
+                />
+              )}
+            </View>
           )}
-          {newMessage.videoUrl && (
-            <Video
-              source={{ uri: newMessage.videoUrl }}
-              style={styles.previewVideo}
-              useNativeControls
-              resizeMode="contain"
+
+          <View style={styles.inputContainer}>
+            <TouchableOpacity onPress={() => handlePickMedia("image")}>
+              <Ionicons name="image" size={24} color="#007AFF" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handlePickMedia("video")}>
+              <Ionicons name="videocam" size={24} color="#007AFF" />
+            </TouchableOpacity>
+            <TextInput
+              style={styles.input}
+              placeholder="Nhập tin nhắn..."
+              value={newMessage.text}
+              onChangeText={(text) =>
+                setNewMessage((prev) => ({ ...prev, text }))
+              }
             />
+            <TouchableOpacity onPress={handleSendMessage}>
+              <Ionicons name="send" size={24} color="#007AFF" />
+            </TouchableOpacity>
+          </View>
+        </>
+      ) : (
+        <View style={styles.notFriendContainer}>
+          <Text style={styles.notFriendText}>
+            Bạn cần trở thành bạn bè với {userName} để trò chuyện.
+          </Text>
+          {!friendRequestStatus.hasPendingRequest && (
+            <TouchableOpacity
+              onPress={handleSendFriendRequest}
+              disabled={loading}
+              style={[styles.actionButton, loading && styles.disabledButton]}
+            >
+              {loading ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text style={styles.actionButtonText}>Gửi lời mời kết bạn</Text>
+              )}
+            </TouchableOpacity>
           )}
+          {friendRequestStatus.hasPendingRequest &&
+            !friendRequestStatus.isReceiver && (
+              <Text style={styles.pendingText}>
+                Đang chờ {userName} chấp nhận lời mời kết bạn...
+              </Text>
+            )}
+          {friendRequestStatus.hasPendingRequest &&
+            friendRequestStatus.isReceiver && (
+              <View style={styles.requestActions}>
+                <TouchableOpacity
+                  onPress={() => handleFriendRequestResponse("accept")}
+                  style={[styles.actionButton, { backgroundColor: "#22c55e" }]}
+                >
+                  <Text style={styles.actionButtonText}>Chấp nhận</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleFriendRequestResponse("reject")}
+                  style={[styles.actionButton, { backgroundColor: "#ef4444" }]}
+                >
+                  <Text style={styles.actionButtonText}>Từ chối</Text>
+                </TouchableOpacity>
+              </View>
+            )}
         </View>
       )}
-
-      <View style={styles.inputContainer}>
-        <TouchableOpacity onPress={() => handlePickMedia("image")}>
-          <Ionicons name="image" size={24} color="#007AFF" />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => handlePickMedia("video")}>
-          <Ionicons name="videocam" size={24} color="#007AFF" />
-        </TouchableOpacity>
-        <TextInput
-          style={styles.input}
-          placeholder="Nhập tin nhắn..."
-          value={newMessage.text}
-          onChangeText={(text) => setNewMessage((prev) => ({ ...prev, text }))}
-        />
-        <TouchableOpacity onPress={handleSendMessage}>
-          <Ionicons name="send" size={24} color="#007AFF" />
-        </TouchableOpacity>
-      </View>
 
       {loading && (
         <View style={styles.loading}>
@@ -1543,6 +1591,24 @@ const styles = StyleSheet.create({
   requestActions: {
     flexDirection: "row",
     gap: 8,
+  },
+  notFriendContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  notFriendText: {
+    fontSize: 18,
+    color: "#666",
+    textAlign: "center",
+    marginBottom: 20,
+  },
+  pendingText: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+    marginTop: 10,
   },
 });
 

@@ -27,7 +27,9 @@ import moment from "moment";
 import { Video } from "expo-av";
 import MessageReactions from "../Components/MessageReactions";
 import uploadFile from "../helpers/uploadFile.js";
+import { useNavigation } from "@react-navigation/native";
 
+const API_URL = "http://localhost:8080";
 const REACTIONS = ["❤️", "😂", "😮", "😢", "👍", "👎"];
 
 const ChatScreen = ({ route, navigation }) => {
@@ -52,6 +54,12 @@ const ChatScreen = ({ route, navigation }) => {
   const [isScrolling, setIsScrolling] = useState(false);
   const [lastMessageCount, setLastMessageCount] = useState(0);
   const [isNearBottom, setIsNearBottom] = useState(true);
+  const [friendRequestStatus, setFriendRequestStatus] = useState({
+    isFriend: false,
+    hasPendingRequest: false,
+    requestId: null,
+    isReceiver: false,
+  });
 
   useEffect(() => {
     if (!currentUser?.token) {
@@ -64,7 +72,7 @@ const ChatScreen = ({ route, navigation }) => {
     console.log("Token:", currentUser.token);
     console.log("Chat with user ID:", userId);
 
-    const socketConnection = io("http://localhost:8080", {
+    const socketConnection = io(API_URL, {
       auth: { token: currentUser.token },
       transports: ["websocket"],
       reconnection: true,
@@ -312,6 +320,101 @@ const ChatScreen = ({ route, navigation }) => {
       );
     });
 
+    // Thêm socket listeners cho friend request
+    socketConnection.on("new-friend-request", (data) => {
+      console.log("Received new friend request:", data);
+      setFriendRequestStatus((prev) => ({
+        ...prev,
+        hasPendingRequest: true,
+        requestId: data.requestId,
+        isReceiver: true,
+      }));
+      Alert.alert("Thông báo", "Bạn có lời mời kết bạn mới");
+    });
+
+    socketConnection.on("friend-request-accepted", (data) => {
+      setFriendRequestStatus((prev) => ({
+        ...prev,
+        isFriend: true,
+        hasPendingRequest: false,
+        requestId: null,
+      }));
+      if (!friendRequestStatus.isReceiver) {
+        Alert.alert("Thành công", "Đã trở thành bạn bè");
+      }
+    });
+
+    socketConnection.on("friend-request-rejected", () => {
+      setFriendRequestStatus((prev) => ({
+        ...prev,
+        hasPendingRequest: false,
+        requestId: null,
+      }));
+      if (!friendRequestStatus.isReceiver) {
+        Alert.alert("Thông báo", "Đã từ chối lời mời kết bạn");
+      }
+    });
+
+    socketConnection.on("friend-request-sent", (data) => {
+      if (data.success) {
+        setFriendRequestStatus((prev) => ({
+          ...prev,
+          hasPendingRequest: true,
+          requestId: data.requestId,
+          isReceiver: false,
+        }));
+        Alert.alert("Thành công", "Đã gửi lời mời kết bạn");
+      }
+    });
+
+    socketConnection.on("unfriend-success", (data) => {
+      setFriendRequestStatus((prev) => ({
+        ...prev,
+        isFriend: false,
+        hasPendingRequest: false,
+        requestId: null,
+      }));
+      Alert.alert("Thành công", "Đã hủy kết bạn");
+    });
+
+    socketConnection.on("unfriend-received", (data) => {
+      setFriendRequestStatus((prev) => ({
+        ...prev,
+        isFriend: false,
+        hasPendingRequest: false,
+        requestId: null,
+      }));
+      Alert.alert("Thông báo", "Đối phương đã hủy kết bạn");
+    });
+
+    // Kiểm tra trạng thái kết bạn khi component mount
+    const checkFriendRequestStatus = async () => {
+      try {
+        const response = await axios.post(
+          `${API_URL}/api/check-friend-request`,
+          {
+            currentUserId: currentUser._id,
+            targetUserId: userId,
+          }
+        );
+
+        if (response.data.success) {
+          setFriendRequestStatus({
+            isFriend: response.data.isFriend,
+            hasPendingRequest: response.data.hasPendingRequest,
+            requestId: response.data.requestId,
+            isReceiver: response.data.isReceiver,
+          });
+        }
+      } catch (error) {
+        console.error("Error checking friend request status:", error);
+      }
+    };
+
+    if (currentUser._id && userId) {
+      checkFriendRequestStatus();
+    }
+
     // Add a small delay to ensure messages are loaded
     const timer = setTimeout(() => {
       socketConnection.emit("message-page", userId);
@@ -321,8 +424,14 @@ const ChatScreen = ({ route, navigation }) => {
       console.log("Disconnecting socket");
       clearTimeout(timer);
       socketConnection.disconnect();
+      socketConnection.off("new-friend-request");
+      socketConnection.off("friend-request-accepted");
+      socketConnection.off("friend-request-rejected");
+      socketConnection.off("friend-request-sent");
+      socketConnection.off("unfriend-success");
+      socketConnection.off("unfriend-received");
     };
-  }, [userId, currentUser, navigation]);
+  }, [userId, currentUser, navigation, friendRequestStatus.isReceiver]);
 
   useEffect(() => {
     if (flatListRef.current && messages.length > 0 && isNearBottom) {
@@ -766,6 +875,85 @@ const ChatScreen = ({ route, navigation }) => {
     };
   }, [socket]);
 
+  // Xử lý gửi lời mời kết bạn
+  const handleSendFriendRequest = async () => {
+    try {
+      setLoading(true);
+      const response = await axios.post(`${API_URL}/api/send-friend-request`, {
+        currentUserId: currentUser._id,
+        targetUserId: userId,
+      });
+
+      if (response.data.success) {
+        socket.emit("send-friend-request", {
+          targetUserId: userId,
+        });
+
+        setFriendRequestStatus((prev) => ({
+          ...prev,
+          hasPendingRequest: true,
+        }));
+      }
+    } catch (error) {
+      console.error("Error sending friend request:", error);
+      Alert.alert("Lỗi", error?.response?.data?.message || "Có lỗi xảy ra");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Xử lý phản hồi lời mời kết bạn
+  const handleFriendRequestResponse = async (action) => {
+    try {
+      const response = await axios.post(
+        `${API_URL}/api/handle-friend-request`,
+        {
+          currentUserId: currentUser._id,
+          requestId: friendRequestStatus.requestId,
+          action,
+        }
+      );
+
+      if (response.data.success) {
+        socket.emit("friend-request-response", {
+          requestId: friendRequestStatus.requestId,
+          action,
+        });
+
+        setFriendRequestStatus((prev) => ({
+          ...prev,
+          hasPendingRequest: false,
+          isFriend: action === "accept",
+        }));
+      }
+    } catch (error) {
+      console.error("Error handling friend request:", error);
+      Alert.alert(
+        "Lỗi",
+        error?.response?.data?.message ||
+          "Có lỗi xảy ra khi xử lý yêu cầu kết bạn"
+      );
+    }
+  };
+
+  // Xử lý hủy kết bạn
+  const handleUnfriend = () => {
+    Alert.alert("Xác nhận", "Bạn có chắc chắn muốn hủy kết bạn không?", [
+      {
+        text: "Hủy",
+        style: "cancel",
+      },
+      {
+        text: "Đồng ý",
+        onPress: () => {
+          socket.emit("unfriend", {
+            targetUserId: userId,
+          });
+        },
+      },
+    ]);
+  };
+
   const renderMessage = ({ item }) => {
     const isSent =
       typeof item.msgByUserId === "object"
@@ -923,6 +1111,62 @@ const ChatScreen = ({ route, navigation }) => {
             style={styles.headerAvatar}
           />
           <Text style={styles.headerName}>{userName}</Text>
+        </View>
+        <View style={styles.headerActions}>
+          {!friendRequestStatus.isFriend &&
+            !friendRequestStatus.hasPendingRequest && (
+              <TouchableOpacity
+                onPress={handleSendFriendRequest}
+                disabled={loading}
+                style={[styles.actionButton, loading && styles.disabledButton]}
+              >
+                {loading ? (
+                  <ActivityIndicator color="white" />
+                ) : (
+                  <Text style={styles.actionButtonText}>Kết bạn</Text>
+                )}
+              </TouchableOpacity>
+            )}
+
+          {friendRequestStatus.hasPendingRequest &&
+            friendRequestStatus.isReceiver && (
+              <View style={styles.requestActions}>
+                <TouchableOpacity
+                  onPress={() => handleFriendRequestResponse("accept")}
+                  style={[styles.actionButton, { backgroundColor: "#22c55e" }]}
+                >
+                  <Text style={styles.actionButtonText}>Chấp nhận</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleFriendRequestResponse("reject")}
+                  style={[styles.actionButton, { backgroundColor: "#ef4444" }]}
+                >
+                  <Text style={styles.actionButtonText}>Từ chối</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+          {friendRequestStatus.hasPendingRequest &&
+            !friendRequestStatus.isReceiver && (
+              <TouchableOpacity
+                disabled
+                style={[
+                  styles.actionButton,
+                  { backgroundColor: "#6b7280", opacity: 0.7 },
+                ]}
+              >
+                <Text style={styles.actionButtonText}>Đã gửi yêu cầu</Text>
+              </TouchableOpacity>
+            )}
+
+          {friendRequestStatus.isFriend && (
+            <TouchableOpacity
+              onPress={handleUnfriend}
+              style={[styles.actionButton, { backgroundColor: "#ef4444" }]}
+            >
+              <Text style={styles.actionButtonText}>Hủy kết bạn</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -1276,6 +1520,29 @@ const styles = StyleSheet.create({
   menuItemText: {
     marginLeft: 8,
     fontSize: 14,
+  },
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginLeft: "auto",
+  },
+  actionButton: {
+    backgroundColor: "#3b82f6",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    marginLeft: 8,
+  },
+  disabledButton: {
+    opacity: 0.7,
+  },
+  actionButtonText: {
+    color: "white",
+    fontWeight: "500",
+  },
+  requestActions: {
+    flexDirection: "row",
+    gap: 8,
   },
 });
 

@@ -60,6 +60,10 @@ const ChatScreen = ({ route, navigation }) => {
     requestId: null,
     isReceiver: false,
   });
+  const [selectedMessage, setSelectedMessage] = useState(null);
+  const [contacts, setContacts] = useState([]);
+  const [selectedContacts, setSelectedContacts] = useState(new Set());
+  const [showForwardModal, setShowForwardModal] = useState(false);
 
   useEffect(() => {
     if (!currentUser?.token) {
@@ -278,25 +282,6 @@ const ChatScreen = ({ route, navigation }) => {
       }
     });
 
-    // Listen for new messages
-    socketConnection.on("new-message", (newMessage) => {
-      console.log("Received new message:", newMessage);
-      // Kiểm tra xem tin nhắn đã được thu hồi chưa
-      if (newMessage.isRecalled) {
-        newMessage.text = "";
-        newMessage.imageUrl = "";
-        newMessage.videoUrl = "";
-        newMessage.fileUrl = "";
-        newMessage.fileName = "";
-      }
-      setMessages((prevMessages) => {
-        const updatedMessages = [...prevMessages, newMessage];
-        return updatedMessages.sort(
-          (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
-        );
-      });
-    });
-
     // Listen for message updates
     socketConnection.on("message-updated", (updatedMessage) => {
       console.log("Message updated:", updatedMessage);
@@ -420,6 +405,15 @@ const ChatScreen = ({ route, navigation }) => {
       socketConnection.emit("message-page", userId);
     }, 500);
 
+    // Add socket listener for friends list
+    socketConnection.on("friends", (data) => {
+      console.log("friends data", data);
+      setContacts(data);
+    });
+
+    // Get friends list for forwarding
+    socketConnection.emit("get-friends");
+
     return () => {
       console.log("Disconnecting socket");
       clearTimeout(timer);
@@ -493,6 +487,7 @@ const ChatScreen = ({ route, navigation }) => {
       imageUrl: newMessage.imageUrl || "",
       videoUrl: newMessage.videoUrl || "",
       msgByUserId: currentUser._id.toString(),
+      replyTo: replyToMessage?._id,
     };
 
     console.log("Sending message:", messageData);
@@ -512,6 +507,7 @@ const ChatScreen = ({ route, navigation }) => {
       );
     });
     setNewMessage({ text: "", imageUrl: "", videoUrl: "" });
+    setReplyToMessage(null);
 
     // Thêm setTimeout để đảm bảo tin nhắn đã được thêm vào state
     setTimeout(() => {
@@ -954,6 +950,86 @@ const ChatScreen = ({ route, navigation }) => {
     ]);
   };
 
+  const handleReplyMessage = (msg) => {
+    setReplyToMessage(msg);
+    setShowMessageMenu(null);
+  };
+
+  const handleReplyClick = (messageId) => {
+    const originalMessage = messages.find((msg) => msg._id === messageId);
+    if (originalMessage) {
+      // Scroll to the original message
+      const messageIndex = messages.findIndex((msg) => msg._id === messageId);
+      if (messageIndex !== -1 && flatListRef.current) {
+        flatListRef.current.scrollToIndex({
+          index: messageIndex,
+          animated: true,
+          viewPosition: 0.5,
+        });
+      }
+    }
+  };
+
+  // Thêm hàm để mở modal chuyển tiếp
+  const handleOpenForwardModal = (message) => {
+    setSelectedMessage(message);
+    setShowForwardModal(true);
+    // Gọi sự kiện get-friends mỗi khi mở modal
+    if (socket) {
+      socket.emit("get-friends");
+    }
+  };
+
+  // Cập nhật lại hàm handleForwardMessage
+  const handleForwardMessage = () => {
+    if (!socket || !selectedMessage || selectedContacts.size === 0) {
+      Alert.alert("Lỗi", "Vui lòng chọn người nhận");
+      return;
+    }
+
+    try {
+      // Gửi tin nhắn đến từng người được chọn
+      selectedContacts.forEach((receiverId) => {
+        socket.emit("forward message", {
+          messageId: selectedMessage._id,
+          sender: currentUser._id,
+          receiver: receiverId,
+          currentChatUserId: userId,
+        });
+      });
+
+      // Đóng modal và reset state
+      setShowForwardModal(false);
+      setSelectedContacts(new Set());
+      setSelectedMessage(null);
+
+      // Hiển thị thông báo ngắn gọn
+      Alert.alert("Đã chuyển tiếp");
+    } catch (error) {
+      console.error("Error forwarding message:", error);
+      Alert.alert("Lỗi", "Không thể chuyển tiếp tin nhắn");
+    }
+  };
+
+  // Add socket listener for forward message success
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on("forward-message-success", (data) => {
+      console.log("Message forwarded successfully:", data);
+    });
+
+    socket.on("forward-message-error", (data) => {
+      console.error("Forward message error:", data);
+      Alert.alert("Lỗi", data.error || "Không thể chuyển tiếp tin nhắn");
+    });
+
+    return () => {
+      socket.off("forward-message-success");
+      socket.off("forward-message-error");
+    };
+  }, [socket]);
+
   const renderMessage = ({ item }) => {
     const isSent =
       typeof item.msgByUserId === "object"
@@ -978,10 +1054,56 @@ const ChatScreen = ({ route, navigation }) => {
           isSent ? styles.sentMessageWrapper : styles.receivedMessageWrapper,
         ]}
       >
+        {/* Reply message header */}
+        {item.replyToMessage && !isRecalled && (
+          <TouchableOpacity
+            onPress={() => handleReplyClick(item.replyToMessage._id)}
+            style={[
+              styles.replyHeader,
+              { left: isSent ? "auto" : 10, right: isSent ? 10 : "auto" },
+            ]}
+          >
+            <Ionicons name="return-up-back" size={14} color="#666" />
+            <Text style={styles.replyHeaderText}>Trả lời tin nhắn</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Reply message display */}
+        {item.replyToMessage && !isRecalled && (
+          <TouchableOpacity
+            onPress={() => handleReplyClick(item.replyToMessage._id)}
+            style={[
+              styles.replyContainer,
+              {
+                position: "absolute",
+                top: -8,
+                left: isSent ? "auto" : 0,
+                right: isSent ? 0 : "auto",
+                width: "85%",
+              },
+            ]}
+          >
+            <View style={styles.replyContent}>
+              <Text style={styles.replyName} numberOfLines={1}>
+                {item.replyToMessage.msgByUserId._id === currentUser._id
+                  ? "Bạn"
+                  : userName}
+              </Text>
+              <Text style={styles.replyText} numberOfLines={1}>
+                {item.replyToMessage.text ||
+                  (item.replyToMessage.imageUrl ? "Hình ảnh" : "") ||
+                  (item.replyToMessage.videoUrl ? "Video" : "") ||
+                  (item.replyToMessage.fileUrl ? "Tệp đính kèm" : "")}
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
+
         <View
           style={[
             styles.messageContainer,
             isSent ? styles.sentMessage : styles.receivedMessage,
+            { marginTop: item.replyToMessage ? 24 : 0 },
           ]}
         >
           {isRecalled ? (
@@ -992,6 +1114,7 @@ const ChatScreen = ({ route, navigation }) => {
             </Text>
           ) : (
             <>
+              {/* Message content */}
               {item.imageUrl && (
                 <Image
                   source={{ uri: item.imageUrl }}
@@ -1091,6 +1214,30 @@ const ChatScreen = ({ route, navigation }) => {
               <Ionicons name="trash-outline" size={20} color="#ff3b30" />
               <Text style={[styles.menuItemText, { color: "#ff3b30" }]}>
                 Xóa tin nhắn
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                handleReplyMessage(item);
+                setShowMessageMenu(false);
+              }}
+            >
+              <Ionicons name="arrow-undo" size={20} color="#007AFF" />
+              <Text style={[styles.menuItemText, { color: "#007AFF" }]}>
+                Trả lời
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => {
+                handleOpenForwardModal(item);
+                setShowMessageMenu(null);
+              }}
+            >
+              <Ionicons name="arrow-redo" size={20} color="#007AFF" />
+              <Text style={[styles.menuItemText, { color: "#007AFF" }]}>
+                Chuyển tiếp
               </Text>
             </TouchableOpacity>
           </View>
@@ -1218,6 +1365,32 @@ const ChatScreen = ({ route, navigation }) => {
             <TouchableOpacity onPress={() => handlePickMedia("video")}>
               <Ionicons name="videocam" size={24} color="#007AFF" />
             </TouchableOpacity>
+
+            {/* Reply Preview */}
+            {replyToMessage && (
+              <View style={styles.replyPreview}>
+                <View style={styles.replyPreviewContent}>
+                  <Text style={styles.replyPreviewName}>
+                    {replyToMessage.msgByUserId._id === currentUser._id
+                      ? "Bạn"
+                      : userName}
+                  </Text>
+                  <Text style={styles.replyPreviewText} numberOfLines={1}>
+                    {replyToMessage.text ||
+                      (replyToMessage.imageUrl ? "(Hình ảnh)" : "") ||
+                      (replyToMessage.videoUrl ? "(Video)" : "") ||
+                      (replyToMessage.fileUrl ? "(File)" : "")}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setReplyToMessage(null)}
+                  style={styles.closeReply}
+                >
+                  <Ionicons name="close" size={20} color="#666" />
+                </TouchableOpacity>
+              </View>
+            )}
+
             <TextInput
               style={styles.input}
               placeholder="Nhập tin nhắn..."
@@ -1322,6 +1495,102 @@ const ChatScreen = ({ route, navigation }) => {
           </View>
         </TouchableOpacity>
       </Modal>
+
+      <Modal
+        visible={showForwardModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => {
+          setShowForwardModal(false);
+          setSelectedContacts(new Set());
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.forwardModal}>
+            <View style={styles.forwardModalHeader}>
+              <Text style={styles.forwardModalTitle}>Chuyển tiếp tin nhắn</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setShowForwardModal(false);
+                  setSelectedContacts(new Set());
+                }}
+              >
+                <Ionicons name="close" size={24} color="#666" />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={contacts}
+              keyExtractor={(item) => item._id}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.contactItem,
+                    selectedContacts.has(item._id) && styles.selectedContact,
+                  ]}
+                  onPress={() => {
+                    setSelectedContacts((prev) => {
+                      const newSet = new Set(prev);
+                      if (newSet.has(item._id)) {
+                        newSet.delete(item._id);
+                      } else {
+                        newSet.add(item._id);
+                      }
+                      return newSet;
+                    });
+                  }}
+                >
+                  <Image
+                    source={{
+                      uri: item.profile_pic || "https://via.placeholder.com/50",
+                    }}
+                    style={styles.contactAvatar}
+                  />
+                  <View style={styles.contactInfo}>
+                    <Text style={styles.contactName}>{item.name}</Text>
+                    <Text style={styles.contactStatus}>
+                      {item.online ? "Online" : "Offline"}
+                    </Text>
+                  </View>
+                  {selectedContacts.has(item._id) && (
+                    <View style={styles.checkmark}>
+                      <Ionicons name="checkmark" size={16} color="#fff" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              )}
+              style={styles.contactsList}
+            />
+            <View style={styles.forwardModalFooter}>
+              <Text style={styles.selectedCount}>
+                Đã chọn: {selectedContacts.size} người
+              </Text>
+              <View style={styles.forwardModalActions}>
+                <TouchableOpacity
+                  style={styles.cancelButton}
+                  onPress={() => {
+                    setShowForwardModal(false);
+                    setSelectedContacts(new Set());
+                  }}
+                >
+                  <Text style={styles.cancelButtonText}>Đóng</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.forwardButton,
+                    selectedContacts.size === 0 && styles.disabledButton,
+                  ]}
+                  onPress={handleForwardMessage}
+                  disabled={selectedContacts.size === 0}
+                >
+                  <Text style={styles.forwardButtonText}>
+                    Chuyển tiếp ({selectedContacts.size})
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -1372,9 +1641,10 @@ const styles = StyleSheet.create({
     alignSelf: "flex-start",
   },
   messageContainer: {
-    padding: 10,
+    padding: 8,
     borderRadius: 15,
     maxWidth: "100%",
+    marginTop: (item) => (item.replyToMessage ? 14 : 0),
   },
   sentMessage: {
     backgroundColor: "#0084ff",
@@ -1506,7 +1776,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -1609,6 +1879,177 @@ const styles = StyleSheet.create({
     color: "#666",
     textAlign: "center",
     marginTop: 10,
+  },
+  replyHeader: {
+    position: "absolute",
+    top: -20,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#f0f0f0",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    zIndex: 1,
+  },
+  replyHeaderText: {
+    fontSize: 12,
+    color: "#666",
+    marginLeft: 4,
+  },
+  replyContainer: {
+    backgroundColor: "rgba(0, 0, 0, 0.05)",
+    borderLeftWidth: 3,
+    borderLeftColor: "#0084ff",
+    borderRadius: 4,
+    padding: 6,
+    marginBottom: 4,
+    maxWidth: "100%",
+    marginTop: -2,
+  },
+  replyContent: {
+    flexDirection: "column",
+  },
+  replyName: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#0084ff",
+    marginBottom: 1,
+  },
+  replyText: {
+    fontSize: 11,
+    color: "#666666",
+    opacity: 0.9,
+  },
+  replyPreview: {
+    position: "absolute",
+    top: -50,
+    left: 0,
+    right: 0,
+    backgroundColor: "#f8f9fa",
+    borderLeftWidth: 4,
+    borderLeftColor: "#0084ff",
+    padding: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 4,
+    marginHorizontal: 10,
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.18,
+    shadowRadius: 1.0,
+    elevation: 1,
+  },
+  replyPreviewContent: {
+    flex: 1,
+  },
+  replyPreviewName: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#0084ff",
+  },
+  replyPreviewText: {
+    fontSize: 12,
+    color: "#666666",
+    opacity: 0.8,
+  },
+  closeReply: {
+    padding: 4,
+  },
+  forwardModal: {
+    width: "90%",
+    maxHeight: "80%",
+    backgroundColor: "white",
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  forwardModalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  forwardModalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  contactsList: {
+    maxHeight: "70%",
+  },
+  contactItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  selectedContact: {
+    backgroundColor: "#e3f2fd",
+  },
+  contactAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  contactInfo: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  contactName: {
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  contactStatus: {
+    fontSize: 14,
+    color: "#666",
+  },
+  checkmark: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#007AFF",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  forwardModalFooter: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+  },
+  selectedCount: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 8,
+  },
+  forwardModalActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  cancelButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#f0f0f0",
+  },
+  cancelButtonText: {
+    color: "#666",
+    fontSize: 16,
+  },
+  forwardButton: {
+    backgroundColor: "#007AFF",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  forwardButtonText: {
+    color: "white",
+    fontSize: 16,
+    fontWeight: "500",
   },
 });
 

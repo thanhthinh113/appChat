@@ -369,7 +369,7 @@ const ChatScreen = ({ route, navigation }) => {
         hasPendingRequest: false,
         requestId: null,
       }));
-      Alert.alert("Thông báo", "Đối phương đã hủy kết bạn");
+      // Alert.alert("Thông báo", "Đối phương đã hủy kết bạn");
     });
 
     // Kiểm tra trạng thái kết bạn khi component mount

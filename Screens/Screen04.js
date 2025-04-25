@@ -7,21 +7,56 @@ import {
   Image,
   ScrollView,
   Alert,
+  FlatList,
 } from "react-native";
 import { AuthContext } from "../AuthContext.js";
 import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import Screen05 from "./Screen05.js";
 import ContactsTab from "../controllers/ContactsTab";
+import GroupChat from "../Components/GroupChat";
+import GroupAvatar from "../Components/GroupAvatar";
 
 const Screen04 = ({ navigation }) => {
-  const { currentUser, logout } = useContext(AuthContext);
+  const { currentUser, logout, socketConnection } = useContext(AuthContext);
   const [activeTab, setActiveTab] = useState("profile");
+  const [groups, setGroups] = useState([]);
+  const [showGroupChat, setShowGroupChat] = useState(false);
 
   useEffect(() => {
     if (!currentUser) {
       navigation.replace("Screen01");
     }
-  }, [currentUser]);
+
+    // Lấy danh sách nhóm khi component mount
+    if (socketConnection) {
+      socketConnection.emit("get-user-groups");
+      socketConnection.on("user-groups", (data) => {
+        if (Array.isArray(data)) {
+          setGroups(data);
+        }
+      });
+
+      // Lắng nghe sự kiện nhóm mới
+      socketConnection.on("new-group", (groupData) => {
+        setGroups((prevGroups) => {
+          const existingGroup = prevGroups.find((g) => g._id === groupData._id);
+          if (existingGroup) {
+            return prevGroups.map((g) =>
+              g._id === groupData._id ? groupData : g
+            );
+          }
+          return [...prevGroups, groupData];
+        });
+      });
+    }
+
+    return () => {
+      if (socketConnection) {
+        socketConnection.off("user-groups");
+        socketConnection.off("new-group");
+      }
+    };
+  }, [currentUser, socketConnection]);
 
   const handleLogout = async () => {
     Alert.alert(
@@ -90,6 +125,36 @@ const Screen04 = ({ navigation }) => {
     </ScrollView>
   );
 
+  const renderGroupsTab = () => (
+    <View style={styles.groupsContainer}>
+      <FlatList
+        data={groups}
+        keyExtractor={(item) => item._id}
+        renderItem={({ item }) => (
+          <TouchableOpacity
+            style={styles.groupItem}
+            onPress={() =>
+              navigation.navigate("GroupChatScreen", { groupId: item._id })
+            }
+          >
+            <GroupAvatar members={item.members || []} size={50} />
+            <View style={styles.groupInfo}>
+              <Text style={styles.groupName}>{item.name}</Text>
+              <Text style={styles.groupMembers}>
+                {item.members?.length || 0} thành viên
+              </Text>
+            </View>
+          </TouchableOpacity>
+        )}
+        ListEmptyComponent={() => (
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>Chưa có nhóm chat nào</Text>
+          </View>
+        )}
+      />
+    </View>
+  );
+
   const renderTabContent = () => {
     switch (activeTab) {
       case "messenger":
@@ -100,6 +165,8 @@ const Screen04 = ({ navigation }) => {
         );
       case "contacts":
         return <ContactsTab />;
+      case "groups":
+        return renderGroupsTab();
       case "profile":
         return renderProfileTab();
       default:
@@ -158,6 +225,35 @@ const Screen04 = ({ navigation }) => {
 
         <TouchableOpacity
           style={styles.tabItem}
+          onPress={() => setShowGroupChat(true)}
+        >
+          <View style={styles.addButton}>
+            <Ionicons name="add" size={24} color="#fff" />
+          </View>
+          <Text style={styles.tabLabel}>Tạo nhóm</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.tabItem}
+          onPress={() => setActiveTab("groups")}
+        >
+          <Ionicons
+            name={activeTab === "groups" ? "people" : "people-outline"}
+            size={24}
+            color={activeTab === "groups" ? "#007AFF" : "#666"}
+          />
+          <Text
+            style={[
+              styles.tabLabel,
+              { color: activeTab === "groups" ? "#007AFF" : "#666" },
+            ]}
+          >
+            Nhóm
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.tabItem}
           onPress={() => setActiveTab("profile")}
         >
           <Ionicons
@@ -180,6 +276,8 @@ const Screen04 = ({ navigation }) => {
           <Text style={[styles.tabLabel, { color: "#FF3B30" }]}>Đăng xuất</Text>
         </TouchableOpacity>
       </View>
+
+      {showGroupChat && <GroupChat onClose={() => setShowGroupChat(false)} />}
     </View>
   );
 };
@@ -283,6 +381,50 @@ const styles = StyleSheet.create({
   tabLabel: {
     fontSize: 12,
     marginTop: 5,
+  },
+  groupsContainer: {
+    flex: 1,
+    padding: 16,
+    paddingBottom: 80,
+  },
+  groupItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
+  groupInfo: {
+    marginLeft: 12,
+  },
+  groupName: {
+    fontSize: 16,
+    fontWeight: "500",
+    color: "#333",
+  },
+  groupMembers: {
+    fontSize: 14,
+    color: "#666",
+    marginTop: 4,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 32,
+  },
+  emptyText: {
+    fontSize: 16,
+    color: "#666",
+    textAlign: "center",
+  },
+  addButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "#007AFF",
+    justifyContent: "center",
+    alignItems: "center",
   },
 });
 

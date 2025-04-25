@@ -2,13 +2,44 @@ import React, { createContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import axios from "axios";
+import io from "socket.io-client";
 
 export const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [currentUser, setCurrentUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [socketConnection, setSocketConnection] = useState(null);
   const baseURL = "http://localhost:8080"; // Đổi thành địa chỉ backend nếu cần
+
+  // Thiết lập socket connection
+  useEffect(() => {
+    if (currentUser?.token) {
+      const socket = io(baseURL, {
+        auth: { token: currentUser.token },
+        transports: ["websocket"],
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+      });
+
+      socket.on("connect", () => {
+        console.log("Socket connected successfully");
+      });
+
+      socket.on("connect_error", (error) => {
+        console.error("Socket connection error:", error.message);
+      });
+
+      setSocketConnection(socket);
+
+      return () => {
+        if (socket) {
+          socket.disconnect();
+        }
+      };
+    }
+  }, [currentUser?.token]);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -159,6 +190,7 @@ export const AuthProvider = ({ children }) => {
         logout,
         updateUser,
         uploadAvatar,
+        socketConnection,
       }}
     >
       {children}
